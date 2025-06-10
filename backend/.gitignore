@@ -2,7 +2,40 @@
 
 # dependencies
 /node_modules
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv
+# Distribution / packaging
+.env
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
 
+# Unit test / coverage reports
+.tox/
+.coverage
+htmlcov/
+
+# IDE / Editor
+.vscode/
+*.idea/
+*.sublime-project
+*.sublime-workspace
+*.spyproject
+*.ropeproject
+*.mypy_cache/
+
+# OS or Environment Files
+.DS_Store
+*.swp
+
+# Virtual Environment
+venv/
 # next.js
 /.next/
 /out/
