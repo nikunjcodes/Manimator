@@ -6,10 +6,11 @@ Handles animation creation, management, and file operations
 import logging
 import asyncio
 from flask import Blueprint, request, jsonify, current_app, send_file
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from marshmallow import Schema, fields, ValidationError
+from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
+from marshmallow import Schema, fields, ValidationError, validate
 from datetime import datetime
 import uuid
+from functools import wraps
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,10 @@ class UpdateAnimationSchema(Schema):
 class RegenerateAnimationSchema(Schema):
     prompt = fields.Str(validate=lambda x: len(x.strip()) >= 10)
     improvement_request = fields.Str()
+
+class GenerateAnimationSchema(Schema):
+    prompt = fields.Str(required=True, validate=validate.Length(min=1, max=1000))
+    quality = fields.Str(validate=validate.OneOf(['low', 'medium', 'high']), missing='medium')
 
 @animation_bp.route('/', methods=['POST'])
 @jwt_required()
@@ -225,35 +230,38 @@ def update_animation(animation_id):
 @animation_bp.route('/<animation_id>', methods=['DELETE'])
 @jwt_required()
 def delete_animation(animation_id):
-    """Delete animation"""
+    """Delete an animation"""
     try:
+        # Get user ID from JWT
         user_id = get_jwt_identity()
+        if not user_id:
+            return jsonify({'error': 'Invalid token'}), 401
+
+        # Validate ownership
+        if not validate_animation_ownership(animation_id, user_id):
+            return jsonify({'error': 'Unauthorized access'}), 403
         
-        db_service = current_app.db_service
-        animation = db_service.get_animation_by_id(animation_id)
+        # Get animation service from app context
+        animation_service = current_app.animation_service
         
-        if not animation:
-            return jsonify({'message': 'Animation not found'}), 404
+        # Delete animation
+        success = animation_service.delete_animation(animation_id)
         
-        if animation['user_id'] != user_id:
-            return jsonify({'message': 'Access denied'}), 403
-        
-        # Delete files from Cloudinary
-        cloudinary_service = current_app.cloudinary_service
-        cloudinary_service.delete_animation_files(animation_id)
-        
-        # Delete local files
-        manim_service = current_app.manim_service
-        manim_service.cleanup_animation_files(animation_id)
-        
-        # Delete from database (implement in database service)
-        # db_service.delete_animation(animation_id)
-        
-        return jsonify({'message': 'Animation deleted successfully'}), 200
+        if success:
+            return jsonify({
+                'message': 'Animation deleted successfully'
+            })
+        else:
+            return jsonify({
+                'error': 'Failed to delete animation'
+            }), 500
         
     except Exception as e:
-        logger.error(f"Delete animation error: {e}")
-        return jsonify({'message': 'Animation deletion failed'}), 500
+        logger.error(f"Failed to delete animation: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Failed to delete animation',
+            'message': str(e)
+        }), 500
 
 @animation_bp.route('/public', methods=['GET'])
 def get_public_animations():
@@ -406,6 +414,133 @@ def get_animation_stats():
     except Exception as e:
         logger.error(f"Get animation stats error: {e}")
         return jsonify({'message': 'Failed to get animation statistics'}), 500
+
+def validate_animation_ownership(animation_id: str, user_id: str) -> bool:
+    """Validate that the user owns the animation"""
+    try:
+        animation = current_app.animation_service.get_animation(animation_id)
+        return animation and str(animation['user_id']) == str(user_id)
+    except Exception as e:
+        logger.error(f"Error validating animation ownership: {e}")
+        return False
+
+@animation_bp.route('/generate', methods=['POST'])
+@jwt_required()
+def generate_animation():
+    """Generate a new animation based on the prompt"""
+    try:
+        # Get user ID from JWT
+        user_id = get_jwt_identity()
+        if not user_id:
+            return jsonify({'error': 'Invalid token'}), 401
+
+        # Validate request data
+        schema = GenerateAnimationSchema()
+        data = schema.load(request.json)
+        
+        # Get animation service from app context
+        animation_service = current_app.animation_service
+        
+        # Generate animation
+        result = animation_service.generate_animation(
+            user_id=user_id,
+            prompt=data['prompt'],
+            quality=data['quality']
+        )
+        
+        return jsonify({
+            'message': 'Animation generation started',
+            'animation_id': result['animation_id'],
+            'status': 'pending'
+        }), 202
+        
+    except ValidationError as e:
+        logger.warning(f"Validation error in animation generation: {e.messages}")
+        return jsonify({
+            'error': 'Validation error',
+            'messages': e.messages
+        }), 400
+    except Exception as e:
+        logger.error(f"Animation generation failed: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Animation generation failed',
+            'message': str(e)
+        }), 500
+
+@animation_bp.route('/status/<animation_id>', methods=['GET'])
+@jwt_required()
+def get_animation_status(animation_id):
+    """Get the status of an animation"""
+    try:
+        # Get user ID from JWT
+        user_id = get_jwt_identity()
+        if not user_id:
+            return jsonify({'error': 'Invalid token'}), 401
+
+        # Validate ownership
+        if not validate_animation_ownership(animation_id, user_id):
+            return jsonify({'error': 'Unauthorized access'}), 403
+        
+        # Get animation service from app context
+        animation_service = current_app.animation_service
+        
+        # Get animation
+        animation = animation_service.get_animation(animation_id)
+        
+        if not animation:
+            return jsonify({
+                'error': 'Animation not found'
+            }), 404
+        
+        return jsonify({
+            'animation_id': animation['_id'],
+            'status': animation['status'],
+            'video_url': animation.get('video_path'),
+            'error': animation.get('error')
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to get animation status: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Failed to get animation status',
+            'message': str(e)
+        }), 500
+
+@animation_bp.route('/list', methods=['GET'])
+@jwt_required()
+def list_animations():
+    """Get list of user's animations"""
+    try:
+        # Get user ID from JWT
+        user_id = get_jwt_identity()
+        if not user_id:
+            return jsonify({'error': 'Invalid token'}), 401
+
+        # Get query parameters
+        limit = request.args.get('limit', default=10, type=int)
+        skip = request.args.get('skip', default=0, type=int)
+        
+        # Get animation service from app context
+        animation_service = current_app.animation_service
+        
+        # Get user's animations
+        animations = animation_service.get_user_animations(
+            user_id=user_id,
+            limit=limit,
+            skip=skip
+        )
+        
+        return jsonify({
+            'animations': animations,
+            'total': len(animations)
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to list animations: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Failed to list animations',
+            'message': str(e)
+        }), 500
 
 async def _generate_animation_async(animation_id: str, db_animation_id: str, manim_code: str):
     """Async function to generate animation"""

@@ -62,16 +62,18 @@ def register():
                 'name': result['user']['name'],
                 'subscription': result['user']['subscription']
             },
-            'access_token': result['access_token']
+            'access_token': result['tokens']['access_token']
         }), 201
         
     except ValidationError as e:
+        logger.warning(f"Registration validation error: {e.messages}")
         return jsonify({'message': 'Validation error', 'errors': e.messages}), 400
     except ValueError as e:
+        logger.warning(f"Registration value error: {str(e)}")
         return jsonify({'message': str(e)}), 400
     except Exception as e:
-        logger.error(f"Registration error: {e}")
-        return jsonify({'message': 'Registration failed'}), 500
+        logger.error(f"Registration error: {str(e)}", exc_info=True)  # Added exc_info=True for full traceback
+        return jsonify({'message': 'Registration failed', 'error': str(e)}), 500
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
@@ -91,21 +93,23 @@ def login():
         return jsonify({
             'message': 'Login successful',
             'user': {
-                'id': result['user']['_id'],
+                'id': str(result['user']['_id']),  # Convert _id to string and use 'id' in response
                 'email': result['user']['email'],
                 'name': result['user']['name'],
                 'subscription': result['user']['subscription']
             },
-            'access_token': result['access_token']
+            'access_token': result['tokens']['access_token']
         }), 200
         
     except ValidationError as e:
+        logger.warning(f"Login validation error: {e.messages}")
         return jsonify({'message': 'Validation error', 'errors': e.messages}), 400
     except ValueError as e:
+        logger.warning(f"Login value error: {str(e)}")
         return jsonify({'message': str(e)}), 401
     except Exception as e:
-        logger.error(f"Login error: {e}")
-        return jsonify({'message': 'Login failed'}), 500
+        logger.error(f"Login error: {str(e)}", exc_info=True)
+        return jsonify({'message': 'Login failed', 'error': str(e)}), 500
 
 @auth_bp.route('/refresh', methods=['POST'])
 @jwt_required(refresh=True)

@@ -18,6 +18,7 @@ from services.auth_service import AuthService
 from services.gemini_service import GeminiService
 from services.manim_service import ManimService
 from services.cloudinary_service import CloudinaryService
+from services.animation_service import AnimationService
 from routes.auth_routes import auth_bp
 from routes.animation_routes import animation_bp
 from routes.chat_routes import chat_bp
@@ -39,26 +40,23 @@ def create_app(config_class=Config):
     
     # Rate limiting (using memory storage)
     limiter = Limiter(
-        app,
-        key_func=get_remote_address,
+        app=app,
         default_limits=["1000 per hour", "100 per minute"],
-        storage_uri=app.config['RATELIMIT_STORAGE_URL']
+        storage_uri=app.config['RATELIMIT_STORAGE_URL'],
+        key_func=get_remote_address
     )
     
     # Initialize services
-    db_service = DatabaseService(app.config['MONGO_URI'])
+    db_service = DatabaseService(mongo_uri=app.config['MONGO_URI'])
     auth_service = AuthService(db_service)
-    gemini_service = GeminiService(app.config['GEMINI_API_KEY'])
-    manim_service = ManimService(
-        quality=app.config['MANIM_QUALITY'],
-        timeout=app.config['MANIM_TIMEOUT'],
-        output_dir=app.config['MANIM_OUTPUT_DIR']
-    )
+    manim_service = ManimService(db_service=db_service)
+    animation_service = AnimationService(db_service=db_service, manim_service=manim_service)
     cloudinary_service = CloudinaryService(
-        app.config['CLOUDINARY_CLOUD_NAME'],
-        app.config['CLOUDINARY_API_KEY'],
-        app.config['CLOUDINARY_API_SECRET']
+        cloud_name=app.config['CLOUDINARY_CLOUD_NAME'],
+        api_key=app.config['CLOUDINARY_API_KEY'],
+        api_secret=app.config['CLOUDINARY_API_SECRET']
     )
+    gemini_service = GeminiService(api_key=app.config['GEMINI_API_KEY'])
     
     # Store services in app context
     app.db_service = db_service
@@ -66,6 +64,7 @@ def create_app(config_class=Config):
     app.gemini_service = gemini_service
     app.manim_service = manim_service
     app.cloudinary_service = cloudinary_service
+    app.animation_service = animation_service
     
     # JWT configuration
     @jwt.token_in_blocklist_loader
@@ -84,25 +83,19 @@ def create_app(config_class=Config):
     def missing_token_callback(error):
         return jsonify({'message': 'Authorization token required'}), 401
     
-    # Register blueprints
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(animation_bp, url_prefix='/api/animations')
     app.register_blueprint(chat_bp, url_prefix='/api/chat')
     
-    # Register error handlers
     register_error_handlers(app)
     
-    # Setup security headers
     setup_security_headers(app)
     
-    # Health check endpoint
     @app.route('/api/health')
     def health_check():
         """Health check endpoint for monitoring"""
         try:
-            # Check database connection
             db_service.health_check()
-            # Check Gemini service
             gemini_service.health_check()
             return jsonify({
                 'status': 'healthy',

@@ -4,6 +4,7 @@ Handles user registration, login, password hashing, and token management
 """
 
 import logging
+import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Any
 import bcrypt
@@ -40,8 +41,13 @@ class AuthService:
     def generate_tokens(self, user_id: str, email: str) -> Dict[str, str]:
         """Generate access and refresh tokens"""
         try:
+            # Generate unique JTI for each token
+            access_jti = str(uuid.uuid4())
+            refresh_jti = str(uuid.uuid4())
+            
             # Access token payload
             access_payload = {
+                'jti': access_jti,
                 'user_id': user_id,
                 'email': email,
                 'type': 'access',
@@ -51,12 +57,16 @@ class AuthService:
             
             # Refresh token payload
             refresh_payload = {
+                'jti': refresh_jti,
                 'user_id': user_id,
                 'email': email,
                 'type': 'refresh',
                 'iat': datetime.utcnow(),
                 'exp': datetime.utcnow() + current_app.config['JWT_REFRESH_TOKEN_EXPIRES']
             }
+            
+            # Store refresh token in database for revocation tracking
+            self.db.store_token(refresh_jti, refresh_payload['exp'])
             
             access_token = jwt.encode(
                 access_payload,
@@ -87,9 +97,11 @@ class AuthService:
                 algorithms=['HS256']
             )
             
-            # Check if token is revoked
-            if self.is_token_revoked(payload.get('jti')):
-                return None
+            # For refresh tokens, check if they're revoked
+            if payload.get('type') == 'refresh':
+                if self.is_token_revoked(payload.get('jti')):
+                    logger.warning(f"Refresh token {payload.get('jti')} is revoked")
+                    return None
             
             return payload
         except jwt.ExpiredSignatureError:
@@ -105,12 +117,16 @@ class AuthService:
     def register_user(self, email: str, password: str, name: str) -> Dict[str, Any]:
         """Register a new user"""
         try:
+            logger.info(f"Starting user registration for email: {email}")
+            
             # Check if user already exists
             existing_user = self.db.get_user_by_email(email)
             if existing_user:
+                logger.warning(f"Registration attempted with existing email: {email}")
                 raise ValueError("User with this email already exists")
             
             # Hash password
+            logger.info("Hashing password")
             hashed_password = self.hash_password(password)
             
             # Create user data
@@ -126,15 +142,26 @@ class AuthService:
             }
             
             # Save user to database
+            logger.info("Creating user in database")
             user_id = self.db.create_user(user_data)
+            logger.info(f"User created with ID: {user_id}")
             
             # Generate tokens
+            logger.info("Generating tokens")
             tokens = self.generate_tokens(user_id, email)
+            logger.info("Tokens generated successfully")
+            
+            # Get the created user
+            user = self.db.get_user_by_id(user_id)
+            if not user:
+                logger.error(f"User created but not found: {user_id}")
+                raise Exception("User created but not found")
             
             # Return user data and tokens
+            logger.info("Registration completed successfully")
             return {
                 'user': {
-                    'id': user_id,
+                    '_id': user_id,
                     'email': email,
                     'name': name,
                     'subscription': 'free'
@@ -145,7 +172,7 @@ class AuthService:
             logger.warning(f"Registration validation error: {e}")
             raise
         except Exception as e:
-            logger.error(f"User registration failed: {e}")
+            logger.error(f"User registration failed: {str(e)}", exc_info=True)
             raise
     
     def login_user(self, email: str, password: str) -> Dict[str, Any]:
@@ -165,14 +192,14 @@ class AuthService:
                 raise ValueError("Account is deactivated")
             
             # Generate tokens
-            tokens = self.generate_tokens(user['_id'], user['email'])
+            tokens = self.generate_tokens(str(user['_id']), user['email'])
             
             # Update last login
-            self.db.update_user(user['_id'], {'last_login': datetime.utcnow()})
+            self.db.update_user(str(user['_id']), {'last_login': datetime.utcnow()})
             
             return {
                 'user': {
-                    'id': user['_id'],
+                    '_id': str(user['_id']),
                     'email': user['email'],
                     'name': user['name'],
                     'subscription': user.get('subscription', 'free')
@@ -183,7 +210,7 @@ class AuthService:
             logger.warning(f"Login validation error: {e}")
             raise
         except Exception as e:
-            logger.error(f"User login failed: {e}")
+            logger.error(f"User login failed: {str(e)}", exc_info=True)
             raise
     
     def refresh_token(self, refresh_token: str) -> Dict[str, str]:
@@ -207,10 +234,33 @@ class AuthService:
             if not payload:
                 return False
             
+            jti = payload.get('jti')
+            if not jti:
+                return False
+            
             expires_at = datetime.fromtimestamp(payload['exp'])
-            return self.db.revoke_token(payload.get('jti'), expires_at)
+            return self.db.revoke_token(jti, expires_at)
         except Exception as e:
             logger.error(f"Token revocation failed: {e}")
+            return False
+    
+    def logout(self, access_token: str, refresh_token: str) -> bool:
+        """Logout user by revoking both tokens"""
+        try:
+            # Revoke refresh token
+            refresh_payload = self.verify_token(refresh_token)
+            if refresh_payload and refresh_payload.get('type') == 'refresh':
+                self.revoke_token(refresh_token)
+            
+            # For access token, we don't need to store it since it's short-lived
+            # But we can verify it was valid
+            access_payload = self.verify_token(access_token)
+            if not access_payload or access_payload.get('type') != 'access':
+                return False
+            
+            return True
+        except Exception as e:
+            logger.error(f"Logout failed: {e}")
             return False
     
     def is_token_revoked(self, jti: str) -> bool:

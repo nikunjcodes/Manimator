@@ -33,7 +33,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const validateToken = async (token: string) => {
     try {
-      const response = await fetch("/api/auth/validate", {
+      const response = await fetch("http://localhost:5000/api/auth/validate", {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -54,7 +54,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (email: string, password: string) => {
     try {
-      const response = await fetch("/api/auth/login", {
+      console.log("Attempting login with:", { email }) // Debug log
+      
+      const response = await fetch("http://localhost:5000/api/auth/login", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -62,13 +64,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ email, password }),
       })
 
+      // Log the raw response for debugging
+      console.log("Login response status:", response.status)
+      const responseText = await response.text()
+      console.log("Raw response:", responseText)
+
       if (response.ok) {
-        const { token, user: userData } = await response.json()
-        localStorage.setItem("auth_token", token)
-        setUser(userData)
-        setIsAuthenticated(true)
+        try {
+          const data = JSON.parse(responseText)
+          localStorage.setItem("auth_token", data.access_token)
+          setUser(data.user)
+          setIsAuthenticated(true)
+        } catch (parseError) {
+          console.error("Failed to parse successful response:", parseError)
+          throw new Error("Invalid server response format")
+        }
       } else {
-        throw new Error("Login failed")
+        try {
+          const errorData = JSON.parse(responseText)
+          throw new Error(errorData.message || "Login failed")
+        } catch (parseError) {
+          console.error("Failed to parse error response:", parseError)
+          throw new Error(`Login failed: ${response.status} ${response.statusText}`)
+        }
       }
     } catch (error) {
       console.error("Login error:", error)
@@ -78,7 +96,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = async (email: string, password: string, name: string) => {
     try {
-      const response = await fetch("/api/auth/register", {
+      console.log("Attempting registration with:", { email, name , password }) // Debug log
+      
+      const response = await fetch("http://localhost:5000/api/auth/register", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -86,13 +106,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ email, password, name }),
       })
 
+      // Log the raw response for debugging
+      console.log("Registration response status:", response.status)
+      const responseText = await response.text()
+      console.log("Raw response:", responseText)
+
       if (response.ok) {
-        const { token, user: userData } = await response.json()
-        localStorage.setItem("auth_token", token)
-        setUser(userData)
-        setIsAuthenticated(true)
+        try {
+          const data = JSON.parse(responseText)
+          localStorage.setItem("auth_token", data.access_token)
+          setUser(data.user)
+          setIsAuthenticated(true)
+        } catch (parseError) {
+          console.error("Failed to parse successful response:", parseError)
+          throw new Error("Invalid server response format")
+        }
       } else {
-        throw new Error("Registration failed")
+        try {
+          const errorData = JSON.parse(responseText)
+          throw new Error(errorData.message || "Registration failed")
+        } catch (parseError) {
+          console.error("Failed to parse error response:", parseError)
+          throw new Error(`Registration failed: ${response.status} ${response.statusText}`)
+        }
       }
     } catch (error) {
       console.error("Registration error:", error)

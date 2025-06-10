@@ -34,22 +34,27 @@ class DatabaseService:
             raise
     
     def _create_indexes(self):
-        """Create database indexes for optimal performance"""
+        """Create necessary database indexes"""
         try:
             # Users collection indexes
             self.db.users.create_index("email", unique=True)
-            self.db.users.create_index("created_at")
+            self.db.users.create_index("username", unique=True)
             
             # Animations collection indexes
             self.db.animations.create_index("user_id")
-            self.db.animations.create_index("status")
             self.db.animations.create_index("created_at")
-            self.db.animations.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
+            self.db.animations.create_index([("tags", ASCENDING)])
             
             # Chat history indexes
             self.db.chat_history.create_index("user_id")
             self.db.chat_history.create_index("animation_id")
             self.db.chat_history.create_index("created_at")
+            
+            # Token indexes
+            self.db.tokens.create_index("jti", unique=True)
+            self.db.tokens.create_index("expires_at", expireAfterSeconds=0)  # TTL index
+            self.db.revoked_tokens.create_index("jti", unique=True)
+            self.db.revoked_tokens.create_index("revoked_at", expireAfterSeconds=0)  # TTL index
             
             # API keys indexes
             self.db.api_keys.create_index("user_id")
@@ -58,10 +63,6 @@ class DatabaseService:
             
             # Usage tracking indexes
             self.db.usage.create_index([("user_id", ASCENDING), ("date", ASCENDING)], unique=True)
-            
-            # Revoked tokens indexes (for JWT blacklist)
-            self.db.revoked_tokens.create_index("jti", unique=True)
-            self.db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)
             
             logger.info("Database indexes created successfully")
         except Exception as e:
@@ -299,27 +300,40 @@ class DatabaseService:
             return []
     
     # Token blacklist operations
-    def revoke_token(self, jti: str, expires_at: datetime) -> bool:
-        """Add token to blacklist"""
+    def revoke_token(self, jti: str) -> bool:
+        """Revoke a token by its JTI"""
         try:
-            self.db.revoked_tokens.insert_one({
-                "jti": jti,
-                "revoked_at": datetime.utcnow(),
-                "expires_at": expires_at
-            })
-            return True
+            result = self.db.revoked_tokens.update_one(
+                {"jti": jti},
+                {"$set": {"revoked_at": datetime.utcnow()}},
+                upsert=True
+            )
+            return result.modified_count > 0 or result.upserted_id is not None
         except Exception as e:
             logger.error(f"Failed to revoke token: {e}")
             return False
-    
+
+    def store_token(self, jti: str, expires_at: datetime) -> bool:
+        """Store a token in the database"""
+        try:
+            result = self.db.tokens.insert_one({
+                "jti": jti,
+                "expires_at": expires_at,
+                "created_at": datetime.utcnow()
+            })
+            return result.inserted_id is not None
+        except Exception as e:
+            logger.error(f"Failed to store token: {e}")
+            return False
+
     def is_token_revoked(self, jti: str) -> bool:
-        """Check if token is revoked"""
+        """Check if a token is revoked"""
         try:
             token = self.db.revoked_tokens.find_one({"jti": jti})
             return token is not None
         except Exception as e:
-            logger.error(f"Failed to check token status: {e}")
-            return False
+            logger.error(f"Failed to check token revocation: {e}")
+            return True  # Assume revoked on error for security
     
     def close_connection(self):
         """Close database connection"""
